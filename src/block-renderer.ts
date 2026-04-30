@@ -51,7 +51,7 @@ export function renderBlock(
 			case 'list':
 				return renderList(node as List, indentLevel, context);
 			case 'code':
-				return renderCodeBlock(node as Code, indentLevel);
+				return renderCodeBlock(node as Code, indentLevel, context);
 			case 'blockquote':
 				return renderBlockquote(node as Blockquote, indentLevel, context);
 			case 'thematicBreak':
@@ -229,18 +229,57 @@ function renderListItem(
 
 /**
  * Render a code block to Typst markup.
- * 
+ * Detects mermaid diagrams and routes them to the mermaid renderer.
+ *
  * @param node - Code node
  * @param indentLevel - Current indentation level
+ * @param context - Rendering context for mermaid warning tracking
  * @returns Rendered Typst code block
  */
-function renderCodeBlock(node: Code, indentLevel: number): string {
+function renderCodeBlock(node: Code, indentLevel: number, context: RenderContext): string {
 	const info = node.lang?.trim() ? node.lang.trim() : '';
+
+	if (info.toLowerCase() === 'mermaid') {
+		return renderMermaidDiagram(node, indentLevel, context);
+	}
+
 	const value = node.value.replace(/\n$/, '');
 	const fence = '`'.repeat(Math.max(3, maxBacktickRun(value) + 1));
 	const open = info ? `${fence}${info}` : fence;
 	const indentedCode = indentLines(value, indentLevel);
 	return [indentLines(open, indentLevel), indentedCode, indentLines(fence, indentLevel)].join('\n');
+}
+
+/**
+ * Render a mermaid diagram code block to a Typst #mermaid-diagram() call.
+ * The diagram source is preserved as a raw Typst block passed to the helper function.
+ * Sets warnings.mermaidDiagrams so the output-builder emits the helper function definition.
+ *
+ * @param node - Code node with lang "mermaid"
+ * @param indentLevel - Current indentation level
+ * @param context - Rendering context (mutated: warnings.mermaidDiagrams = true)
+ * @returns Rendered Typst mermaid-diagram call
+ */
+function renderMermaidDiagram(node: Code, indentLevel: number, context: RenderContext): string {
+	context.warnings.mermaidDiagrams = true;
+
+	if (context.onError) {
+		context.onError({
+			severity: ErrorSeverity.WARNING,
+			message: 'Mermaid diagram detected. Native rendering is not available in Typst; the diagram source is preserved using the #mermaid-diagram() helper.',
+			context: 'mermaid rendering',
+			details: { diagramSource: node.value }
+		});
+	}
+
+	const value = node.value.replace(/\n$/, '');
+	const fence = '`'.repeat(Math.max(3, maxBacktickRun(value) + 1));
+	const lines = [
+		`#mermaid-diagram(${fence}mermaid`,
+		value,
+		`${fence})`
+	];
+	return indentLines(lines.join('\n'), indentLevel);
 }
 
 /**

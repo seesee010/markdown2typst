@@ -21,7 +21,7 @@ function buildWarningsSection(context: RenderContext): string | null {
 	const sections: string[] = [];
 
 	// Add header if any warnings exist
-	const hasWarnings = warnings.externalImages;
+	const hasWarnings = warnings.externalImages || warnings.mermaidDiagrams;
 	if (!hasWarnings) return null;
 
 	sections.push('// ========================= WARNINGS =========================');
@@ -33,6 +33,20 @@ function buildWarningsSection(context: RenderContext): string | null {
 	sections.push('// these minor conversion warnings to the user.');
 	sections.push('// ------------------------------------------------------------');
 	sections.push('');
+
+	// Add mermaid-diagram helper function if mermaid diagrams were detected
+	if (warnings.mermaidDiagrams) {
+		sections.push('// MERMAID DIAGRAMS WERE DETECTED!');
+		sections.push('#let mermaid-diagram(code) = {');
+		sections.push('  rect(radius: 4pt, inset: 10pt)[');
+		sections.push('    #align(center)[');
+		sections.push('      #text(weight: "bold")[Mermaid Diagram]');
+		sections.push('    ]');
+		sections.push('    #code');
+		sections.push('  ]');
+		sections.push('}');
+		sections.push('');
+	}
 
 	// Add external images function if needed
 	if (warnings.externalImages) {
