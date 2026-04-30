@@ -19,7 +19,7 @@ A JavaScript library for converting Markdown to [Typst](https://typst.app/) code
 - ✔ Dividers (horizontal rule)
 - ✔ Footnotes
 - ✔ Table of Contents (ToC)
-- ✔ Mermaid diagrams --> Coming soon(!)
+- ✔ Mermaid diagrams
 - ✘ Checklists --> Coming soon(!)
 - ✘ HTML, GeoJSON, STL --> Not Typst compatible.
 
