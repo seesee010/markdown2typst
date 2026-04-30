@@ -142,6 +142,8 @@ export type DocumentMetadata = {
 export type ConversionWarnings = {
 	/** Whether external images were detected */
 	externalImages: boolean;
+	/** Whether mermaid diagrams were detected */
+	mermaidDiagrams: boolean;
 };
 
 /**

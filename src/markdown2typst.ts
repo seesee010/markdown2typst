@@ -76,7 +76,7 @@ export function markdown2typst(markdown: string, options: Markdown2TypstOptions 
 			definitions,
 			footnoteDefinitions,
 			onError: options.onError,
-			warnings: { externalImages: false }
+			warnings: { externalImages: false, mermaidDiagrams: false }
 		};
 		return buildOutput(tree, metadata, leadingH1?.index ?? null, context);
 	} catch (error) {

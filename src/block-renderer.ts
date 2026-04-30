@@ -14,7 +14,8 @@ import type {
 	Blockquote,
 	Table,
 	TableRow,
-	TableCell
+	TableCell,
+	PhrasingContent
 } from 'mdast';
 import type { MathNode, RenderContext } from './types.js';
 import { renderInlines } from './inline-renderer.js';
@@ -51,7 +52,7 @@ export function renderBlock(
 			case 'list':
 				return renderList(node as List, indentLevel, context);
 			case 'code':
-				return renderCodeBlock(node as Code, indentLevel);
+				return renderCodeBlock(node as Code, indentLevel, context);
 			case 'blockquote':
 				return renderBlockquote(node as Blockquote, indentLevel, context);
 			case 'thematicBreak':
@@ -229,18 +230,57 @@ function renderListItem(
 
 /**
  * Render a code block to Typst markup.
- * 
+ * Detects mermaid diagrams and routes them to the mermaid renderer.
+ *
  * @param node - Code node
  * @param indentLevel - Current indentation level
+ * @param context - Rendering context for mermaid warning tracking
  * @returns Rendered Typst code block
  */
-function renderCodeBlock(node: Code, indentLevel: number): string {
+function renderCodeBlock(node: Code, indentLevel: number, context: RenderContext): string {
 	const info = node.lang?.trim() ? node.lang.trim() : '';
+
+	if (info.toLowerCase() === 'mermaid') {
+		return renderMermaidDiagram(node, indentLevel, context);
+	}
+
 	const value = node.value.replace(/\n$/, '');
 	const fence = '`'.repeat(Math.max(3, maxBacktickRun(value) + 1));
 	const open = info ? `${fence}${info}` : fence;
 	const indentedCode = indentLines(value, indentLevel);
 	return [indentLines(open, indentLevel), indentedCode, indentLines(fence, indentLevel)].join('\n');
+}
+
+/**
+ * Render a mermaid diagram code block to a Typst #mermaid-diagram() call.
+ * The diagram source is preserved as a raw Typst block passed to the helper function.
+ * Sets warnings.mermaidDiagrams so the output-builder emits the helper function definition.
+ *
+ * @param node - Code node with lang "mermaid"
+ * @param indentLevel - Current indentation level
+ * @param context - Rendering context (mutated: warnings.mermaidDiagrams = true)
+ * @returns Rendered Typst mermaid-diagram call
+ */
+function renderMermaidDiagram(node: Code, indentLevel: number, context: RenderContext): string {
+	context.warnings.mermaidDiagrams = true;
+
+	if (context.onError) {
+		context.onError({
+			severity: ErrorSeverity.WARNING,
+			message: 'Mermaid diagram detected. Native rendering is not available in Typst; the diagram source is preserved using the #mermaid-diagram() helper.',
+			context: 'mermaid rendering',
+			details: { diagramSource: node.value }
+		});
+	}
+
+	const value = node.value.replace(/\n$/, '');
+	const fence = '`'.repeat(Math.max(3, maxBacktickRun(value) + 1));
+	const lines = [
+		`#mermaid-diagram(${fence}mermaid`,
+		value,
+		`${fence})`
+	];
+	return indentLines(lines.join('\n'), indentLevel);
 }
 
 /**
@@ -338,9 +378,131 @@ function renderTable(
 	}
 }
 
+// ─── GitHub-style callout support ────────────────────────────────────────────
+
+/** Visual configuration for each GitHub callout type */
+const CALLOUT_CONFIGS = {
+	NOTE:      { label: 'Note',      fill: '#ddf4ff', stroke: '#0969da' },
+	TIP:       { label: 'Tip',       fill: '#dafbe1', stroke: '#1a7f37' },
+	IMPORTANT: { label: 'Important', fill: '#fbefff', stroke: '#8250df' },
+	WARNING:   { label: 'Warning',   fill: '#fff8c5', stroke: '#9a6700' },
+	CAUTION:   { label: 'Caution',   fill: '#ffebe9', stroke: '#cf222e' },
+} as const;
+
+type CalloutType = keyof typeof CALLOUT_CONFIGS;
+
+const CALLOUT_PATTERN = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i;
+
+/**
+ * Detect whether a blockquote is a GitHub-style callout.
+ * Returns the callout type if the first paragraph starts with [!TYPE], null otherwise.
+ */
+function detectCallout(node: Blockquote): CalloutType | null {
+	if (node.children.length === 0) return null;
+	const firstChild = node.children[0];
+	if (firstChild.type !== 'paragraph') return null;
+
+	// Use plain text so detection works regardless of internal AST structure
+	const plainText = plainTextFromPhrasing(
+		(firstChild as Paragraph).children,
+		new Map()
+	).trimStart();
+
+	const match = CALLOUT_PATTERN.exec(plainText);
+	if (!match) return null;
+	return match[1].toUpperCase() as CalloutType;
+}
+
+/**
+ * Render the inline content of the first callout paragraph, stripping the [!TYPE] marker.
+ * Handles the case where the marker and the content share a single text node
+ * (soft line break) or are split across the first text node and subsequent nodes.
+ */
+function renderCalloutFirstParagraphBody(
+	children: PhrasingContent[],
+	type: CalloutType,
+	context: RenderContext
+): string {
+	if (children.length === 0) return '';
+
+	const first = children[0];
+
+	// The marker is always at the start of the first text node
+	if (first.type === 'text') {
+		const raw = (first as { type: 'text'; value: string }).value;
+		const markerMatch = new RegExp(`^\\[!${type}\\]`, 'i').exec(raw);
+		if (markerMatch) {
+			const afterMarker = raw.slice(markerMatch[0].length).replace(/^[\n\r]+/, '');
+			let rest: PhrasingContent[] = afterMarker
+				? [{ ...first, type: 'text', value: afterMarker } as PhrasingContent, ...children.slice(1)]
+				: children.slice(1);
+			// Drop a leading hard-break node if present
+			if (rest.length > 0 && rest[0].type === 'break') rest = rest.slice(1);
+			return rest.length > 0 ? renderInlines(rest, context) : '';
+		}
+	}
+
+	// Fallback: render all children (shouldn't happen in practice)
+	return renderInlines(children, context);
+}
+
+/**
+ * Render a GitHub-style callout as a styled Typst block.
+ * Produces a coloured rect with a bold label and the callout body.
+ */
+function renderCallout(
+	node: Blockquote,
+	type: CalloutType,
+	indentLevel: number,
+	context: RenderContext
+): string {
+	const cfg = CALLOUT_CONFIGS[type];
+
+	// Collect body parts: inline remainder of the first paragraph + remaining block children
+	const bodyParts: string[] = [];
+
+	const firstParagraphBody = renderCalloutFirstParagraphBody(
+		(node.children[0] as Paragraph).children,
+		type,
+		context
+	);
+	if (firstParagraphBody.trim()) bodyParts.push(firstParagraphBody);
+
+	for (const child of node.children.slice(1)) {
+		const rendered = renderBlock(child as Content, 0, context);
+		if (rendered) bodyParts.push(rendered);
+	}
+
+	const body = bodyParts.join('\n\n');
+
+	const lines: string[] = [
+		`#block(`,
+		`  fill: rgb("${cfg.fill}"),`,
+		`  stroke: (left: 2pt + rgb("${cfg.stroke}")),`,
+		`  radius: 4pt,`,
+		`  width: 100%,`,
+		`  inset: (left: 12pt, right: 12pt, top: 10pt, bottom: 10pt),`,
+		`)[`,
+		`  #text(weight: "bold", fill: rgb("${cfg.stroke}"))[${cfg.label}]`,
+	];
+
+	if (body.trim()) {
+		lines.push('');
+		for (const bodyLine of body.split('\n')) {
+			lines.push(`  ${bodyLine}`);
+		}
+	}
+
+	lines.push(`]`);
+
+	return indentLines(lines.join('\n'), indentLevel);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Render a blockquote to Typst markup.
- * 
+ *
  * @param node - Blockquote node
  * @param indentLevel - Current indentation level
  * @param context - Rendering context with definitions and footnotes
@@ -351,6 +513,12 @@ function renderBlockquote(
 	indentLevel: number,
 	context: RenderContext
 ): string {
+	// GitHub-style callout takes precedence over regular blockquote rendering
+	const calloutType = detectCallout(node);
+	if (calloutType) {
+		return renderCallout(node, calloutType, indentLevel, context);
+	}
+
 	const body = node.children
 		.map((child) => renderBlock(child, 0, context))
 		.filter(isNonEmpty)
